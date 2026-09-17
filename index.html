@@ -15,7 +15,7 @@
     font:14px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
   #app{display:flex;flex-direction:column;height:100%;}
   header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--panel);
-    border-bottom:1px solid var(--line);flex-wrap:wrap;}
+    border-bottom:1px solid var(--line);flex-wrap:wrap;z-index:1000;}
   header h1{font-size:14px;font-weight:600;margin:0 10px 0 0;color:var(--text);letter-spacing:.2px;white-space:nowrap;}
   header h1 span{color:var(--dim);font-weight:400;}
   button, select, input[type=file]::file-selector-button{
@@ -75,7 +75,7 @@
   ::-webkit-scrollbar-thumb{background:#333844;border-radius:5px;}
   #sidebarToggle{margin-left:auto;}
   @media (max-width:820px){
-    #sidebar{position:absolute;right:0;top:0;bottom:0;z-index:5;width:88vw;max-width:360px;}
+    #sidebar{position:absolute;right:0;top:0;bottom:0;z-index:5;width:88vw;max-width:360px;padding-top:7rem;}
   }
 </style>
 </head>
@@ -269,8 +269,8 @@ Parser.prototype.parsePrimary=function(){
   const tok=this.peek();
   if(tok.t==='num'){ this.next(); return {type:'num',value:tok.v}; }
   if(tok.t==='str'){ this.next(); return {type:'str',value:tok.v}; }
-  if(tok.t==='hash'){ this.next(); return {type:'ref',name:tok.name,prop:tok.prop}; }
-  if(tok.t==='at'){ this.next(); return {type:'ref',name:tok.name,prop:tok.prop}; }
+  if(tok.t==='hash'){ this.next(); return {type:'ref',sigil:'#',name:tok.name,prop:tok.prop}; }
+  if(tok.t==='at'){ this.next(); return {type:'ref',sigil:'@',name:tok.name,prop:tok.prop}; }
   if(tok.t==='('){ this.next(); const e=this.parseExpr(); if(this.peek().t===')') this.next(); return e; }
   if(tok.t==='ident'){
     this.next();
@@ -302,7 +302,7 @@ function callFn(name, args){
     case 'not': return toNum(args[0])>0?0:1;
     case 'isnull': return args[0]===NULLV?1:0;
     case 'ifelse': { for(let i=0;i+1<args.length;i+=2){ if(toNum(args[i])>0) return args[i+1]; } return args.length?args[args.length-1]:0; }
-    case 'int': return Math.trunc(toNum(args[0]));
+    case 'int': return Math.floor(toNum(args[0]));
     case 'round': return Math.round(toNum(args[0]));
     case 'abs': return Math.abs(toNum(args[0]));
     case 'min': return Math.min.apply(null,args.map(toNum));
@@ -342,7 +342,7 @@ function evalAST(node){
   switch(node.type){
     case 'num': out=node.value; break;
     case 'str': out=node.value; break;
-    case 'ref': out = node.prop ? Engine.resolveProp(node.name,node.prop) : Engine.resolveVar(node.name); break;
+    case 'ref': { const v = node.prop ? Engine.resolveProp(node.name,node.prop) : Engine.resolveVar(node.name); out = node.sigil==='@' ? toStr(v) : toNum(v); break; }
     case 'neg': out = -toNum(evalAST(node.a)); break;
     case 'bin': {
       const a=evalAST(node.a), b=evalAST(node.b);
@@ -384,11 +384,13 @@ const Engine = {
   overrides:new Map(), visOverrides:new Map(), animState:new Map(),
   imageCache:new Map(), blobPromiseCache:new Map(), fontFamilies:new Map(),
   elementRefs:new Map(), frameVarCache:new Map(), resolvingSet:new Set(),
+  elementAnimState:new Map(), elementAnims:new Map(),
   declCounter:0, loaded:false, wallpaperPath:null,
   touch:{active:false, x:0, y:0, beginX:0, beginY:0},
   screenW:1080, screenH:1920,
   resumeTrigger:null, pauseTrigger:null,
   latestButtons:[], activeButtonEl:null, pressedButtonEl:null,
+  latestSliders:[], activeSliderEl:null, sliderState:new Map(), unlockReached:false,
   clock:{override:false, base:Date.now(), setAt:Date.now(), speed:1},
   sim:{battLevel:82,battState:0,ringMode:2,volLevel:60,missedCalls:0,unreadSms:0,tiltX:0,tiltY:0,
        timeFormat24:0, weatherSim:false, wCity:'San Francisco', wCond:'Sunny', wTemp:21, wHigh:24, wLow:14},
@@ -433,7 +435,7 @@ Engine.weatherValueFor = function(varName){
 
 Engine.resolveDecl = function(decl){
   if(decl.kind==='vararray'){
-    let idx = Math.trunc(toNum(evaluate(decl.indexExpr)));
+    let idx = Math.floor(toNum(evaluate(decl.indexExpr)));
     if(!decl.items.length) return decl.type==='string'?'':0;
     idx = clamp(idx,0,decl.items.length-1);
     const item = decl.items[idx];
@@ -441,7 +443,8 @@ Engine.resolveDecl = function(decl){
   }
   if(decl.hasAnimation) return this.computeAnim(decl);
   if(this.overrides.has(decl.name)) return this.overrides.get(decl.name);
-  return evaluate(decl.expression);
+  const v=evaluate(decl.expression);
+  return decl.type==='string' ? toStr(v) : toNum(v);
 };
 
 Engine.computeAnim = function(decl){
@@ -457,6 +460,7 @@ Engine.computeAnim = function(decl){
   for(let k=0;k<decl.frames.length-1;k++){
     if(elapsed>=decl.frames[k].time && elapsed<=decl.frames[k+1].time){ f0=decl.frames[k]; f1=decl.frames[k+1]; break; }
   }
+  if(decl.type==='string') return toStr(evaluate(f0.value));
   const v0=toNum(evaluate(f0.value)), v1=toNum(evaluate(f1.value));
   const span=(f1.time-f0.time)||1;
   const t=clamp((elapsed-f0.time)/span,0,1);
@@ -473,6 +477,110 @@ Engine.stopAnim = function(name){
   const cur=this.resolveDecl(decl);
   this.animState.set(decl.nodeId, {started:true,startTime:this.simNow(),frozen:cur});
 };
+
+
+/* -------- element-attached animations --------
+   MAML element animations use typed keyframes (Position/Size/Alpha/Rotation)
+   and source-frame keyframes. They auto-play unless initPause="true"; named
+   elements can also be controlled with Command target="name.animation". */
+function parseElementAnimations(el){
+  const out=[];
+  const specs=[
+    ['PositionAnimation','position'],
+    ['SizeAnimation','size'],
+    ['AlphaAnimation','alpha'],
+    ['RotationAnimation','rotation'],
+    ['SourcesAnimation','sources']
+  ];
+  for(const [tag,kind] of specs){
+    const a=Array.from(el.children).find(c=>c.tagName===tag);
+    if(!a) continue;
+    const frames=Array.from(a.children).filter(c=>c.tagName==='Position'||c.tagName==='Size'||c.tagName==='Alpha'||c.tagName==='Rotation'||c.tagName==='Source')
+      .map(f=>({time:parseFloat(f.getAttribute('time'))||0, node:f}));
+    if(!frames.length) continue;
+    out.push({kind,frames,loop:a.getAttribute('loop')!=='false',initPause:a.getAttribute('initPause')==='true',
+      id:(el.getAttribute('name')||'anon')+'@'+tag});
+  }
+  return out;
+}
+function getElementAnim(el){
+  let anims=Engine.elementAnims.get(el);
+  if(anims===undefined){ anims=parseElementAnimations(el); Engine.elementAnims.set(el,anims); }
+  return anims;
+}
+function elementAnimState(anim){
+  let st=Engine.elementAnimState.get(anim.id);
+  if(!st){
+    st={started:!anim.initPause,startTime:anim.initPause?null:Engine.simNow(),frozen:null};
+    Engine.elementAnimState.set(anim.id,st);
+  }
+  return st;
+}
+function startElementAnim(name){
+  let found=false;
+  for(const [el,anims] of Engine.elementAnims){
+    if(el.getAttribute('name')!==name) continue;
+    for(const a of anims){
+      Engine.elementAnimState.set(a.id,{started:true,startTime:Engine.simNow(),frozen:null});
+      found=true;
+    }
+  }
+  return found;
+}
+function stopElementAnim(name){
+  let found=false;
+  for(const [el,anims] of Engine.elementAnims){
+    if(el.getAttribute('name')!==name) continue;
+    for(const a of anims){
+      const st=elementAnimState(a);
+      st.frozen=elementAnimValue(el,a,Engine.simNow());
+      st.started=true;
+      found=true;
+    }
+  }
+  return found;
+}
+function elementAnimValue(el,anim,now){
+  const st=elementAnimState(anim);
+  if(!st.started){
+    const n=anim.frames[0].node;
+    return anim.kind==='sources' ? (n.getAttribute('src')||'') : null;
+  }
+  if(st.frozen!=null) return st.frozen;
+  const last=anim.frames[anim.frames.length-1].time;
+  let elapsed=now-st.startTime;
+  if(anim.loop===false) elapsed=Math.min(Math.max(elapsed,0),last);
+  else elapsed=last>0?((elapsed%last)+last)%last:0;
+  let f0=anim.frames[0], f1=anim.frames[anim.frames.length-1];
+  for(let k=0;k<anim.frames.length-1;k++){
+    if(elapsed>=anim.frames[k].time && elapsed<=anim.frames[k+1].time){f0=anim.frames[k];f1=anim.frames[k+1];break;}
+  }
+  if(anim.kind==='sources'){
+    return elapsed < f1.time ? (f0.node.getAttribute('src')||'') : (f1.node.getAttribute('src')||'');
+  }
+  const attrs=anim.kind==='position'?['x','y']:anim.kind==='size'?['w','h']:anim.kind==='alpha'?['a']:['angle'];
+  const vals={};
+  const span=(f1.time-f0.time)||1, t=clamp((elapsed-f0.time)/span,0,1);
+  for(const attr of attrs){
+    const a0=f0.node.getAttribute(attr), a1=f1.node.getAttribute(attr);
+    const v0=toNum(evaluate(a0==null?'0':a0)), v1=toNum(evaluate(a1==null?a0==null?'0':a0:a1));
+    vals[attr]=v0+(v1-v0)*t;
+  }
+  return vals;
+}
+function getElementAnimProps(el){
+  const props={};
+  for(const a of getElementAnim(el)){
+    const v=elementAnimValue(el,a,Engine.simNow());
+    if(v==null) continue;
+    if(a.kind==='sources' && v) props.src=v;
+    else if(a.kind==='position') Object.assign(props,{x:v.x,y:v.y});
+    else if(a.kind==='size') Object.assign(props,{w:v.w,h:v.h});
+    else if(a.kind==='alpha') props.alpha=v.a;
+    else if(a.kind==='rotation') props.rotation=v.angle;
+  }
+  return props;
+}
 
 Engine.resolveProp = function(name, prop){
   const er = this.elementRefs.get(name);
@@ -541,12 +649,12 @@ function collectDecls(el){
         if(animEl){
           const frames=Array.from(animEl.children).filter(c=>c.tagName==='AniFrame')
             .map(f=>({time:parseFloat(f.getAttribute('time'))||0, value:f.getAttribute('value')||'0'}));
-          decl={kind:'var',name,hasAnimation:true,frames,
+          decl={kind:'var',name,type:(child.getAttribute('type')||'number').toLowerCase(),hasAnimation:true,frames,
                 loop:animEl.getAttribute('loop')!=='false',
                 initPause:animEl.getAttribute('initPause')==='true',
                 nodeId:name+'#'+(Engine.declCounter++)};
         } else {
-          decl={kind:'var',name,hasAnimation:false,expression:child.getAttribute('expression')||'0'};
+          decl={kind:'var',name,type:(child.getAttribute('type')||'number').toLowerCase(),hasAnimation:false,expression:child.getAttribute('expression')||'0'};
         }
         Engine.varDecls.set(name, decl);
         const thAttr=child.getAttribute('threshold');
@@ -562,9 +670,18 @@ function collectDecls(el){
         for(const v of Array.from(varsEl.children)){
           if(v.tagName!=='Var') continue;
           const nm=v.getAttribute('name'); if(!nm) continue;
-          Engine.varDecls.set(nm, {kind:'vararray',name:nm,type:typeAttr,indexExpr:v.getAttribute('index')||'0',items});
+          Engine.varDecls.set(nm, {
+            kind:'vararray', name:nm,
+            type:(v.getAttribute('type')||typeAttr||'number').toLowerCase(),
+            indexExpr:v.getAttribute('index')||'0', items
+          });
         }
       }
+      // Vars/Items are declaration data, not nested runtime declarations.
+      // Do not recurse into a VarArray or its child <Var> nodes, otherwise the
+      // inner <Var name="verse_text"/> overwrites the array declaration with
+      // an ordinary Var whose implicit expression is 0.
+      continue;
     } else if(tag==='ContentProviderBinder'){
       for(const v of Array.from(child.children)){
         if(v.tagName==='Variable'){
@@ -617,8 +734,11 @@ function doCommand(cmdEl, tag){
       const dot=target.lastIndexOf('.');
       const tname=dot>=0?target.slice(0,dot):target, tprop=dot>=0?target.slice(dot+1):'';
       if(tprop==='animation'){
-        if(value==='play') Engine.startAnim(tname);
-        else if(value==='stop') Engine.stopAnim(tname);
+        if(value==='play'){
+          if(!Engine.startAnim(tname)) startElementAnim(tname);
+        } else if(value==='stop'){
+          if(!Engine.stopAnim(tname)) stopElementAnim(tname);
+        }
         log(`${tname}.animation → ${value}`, 'act');
       } else if(tprop==='visibility'){
         const cur = Engine.visOverrides.get(tname);
@@ -768,7 +888,12 @@ function computeTextString(el){
     const vals = parts.map(p=>evaluate(p));
     return sprintf(el.getAttribute('format'), vals);
   }
-  if(el.hasAttribute('text')) return el.getAttribute('text');
+  if(el.hasAttribute('text')){
+    const raw=el.getAttribute('text');
+    const t=raw.trim();
+    if(/^[#@][A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(t)) return toStr(evaluate(t));
+    return raw;
+  }
   return '';
 }
 const WEEKDAY_LONG=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
@@ -794,7 +919,7 @@ function formatDate(d, fmt){
       case 'EEEE': return WEEKDAY_LONG[wd];
       case 'EEE': case 'EE': return WEEKDAY_SHORT[wd];
       case 'E': return WEEKDAY_SHORT[wd][0];
-      case 'NNNN': return ''; // lunar calendar not simulated
+      case 'NNNN': return '(lunar)'; // lunar calendar not simulated
       case 'HH': return String(h24).padStart(2,'0');
       case 'H': return String(h24);
       case 'kk': return String(h24===0?24:h24).padStart(2,'0');
@@ -819,6 +944,7 @@ const canvas=document.getElementById('stage');
 const ctx=canvas.getContext('2d');
 let alphaStack=[1];
 let frameButtons=[];
+let frameSliders=[];
 
 const SKIP_TAGS=new Set(['Var','VarArray','ExternalCommands','VariableBinders','FramerateController',
   'Triggers','Trigger','NormalState','PressedState','ReachedState','StartPoint','EndPoint','Path',
@@ -846,10 +972,18 @@ function prepass(el){
   if(SKIP_TAGS.has(tag)) return;
   const name=el.getAttribute('name');
   if((tag==='Image'||tag==='ImageNumber') && name){
-    const path=resolveImagePath(el);
-    const img=path?getImage(path):null;
-    Engine.elementRefs.set(name,{bmpWidth: img&&img.naturalWidth||0, bmpHeight: img&&img.naturalHeight||0,
-      actualW: getNum(el,'w',0), actualH: getNum(el,'h',0)});
+    getElementAnim(el);
+    if(tag==='ImageNumber'){
+      const info=imageNumberInfo(el);
+      Engine.elementRefs.set(name,{bmpWidth:info.totalW,bmpHeight:info.height,
+        actualW:getNum(el,'w',0), actualH:getNum(el,'h',0)});
+    } else {
+      const path=resolveImagePath(el);
+      const img=path?getImage(path):null;
+      const ap=getElementAnimProps(el);
+      Engine.elementRefs.set(name,{bmpWidth: img&&img.naturalWidth||0, bmpHeight: img&&img.naturalHeight||0,
+        actualW: getNum(el,'w',0), actualH: getNum(el,'h',0), ...ap});
+    }
   } else if((tag==='Text'||tag==='DateTime') && name){
     try{
       const str = tag==='Text'? computeTextString(el) : formatDate(new Date(Engine.simNow()), el.getAttribute('format')||'');
@@ -869,13 +1003,30 @@ function prepass(el){
   }
   for(const c of Array.from(el.children)) prepass(c);
 }
-function resolveImagePath(el){
+function imageNumberInfo(el){
   const srcExp=el.getAttribute('srcExp');
-  if(srcExp) return toStr(evaluate(srcExp));
-  const src=el.getAttribute('src');
+  const src=srcExp?toStr(evaluate(srcExp)):(el.getAttribute('src')||'');
+  const raw=el.getAttribute('number');
+  let n=Math.trunc(toNum(raw==null?'0':evaluate(raw)));
+  if(!Number.isFinite(n)) n=0;
+  const text=String(Math.abs(n));
+  const gap=el.hasAttribute('space')?getNum(el,'space',0):0;
+  const imgs=text.split('').map(d=>getImage(insertSuffix(src,Number(d))));
+  const widths=imgs.map(im=>(im&&im.naturalWidth)||40);
+  const heights=imgs.map(im=>(im&&im.naturalHeight)||60);
+  return {src,text,gap,imgs,widths,height:Math.max(1,...heights),totalW:widths.reduce((a,b)=>a+b,0)+Math.max(0,widths.length-1)*gap};
+}
+function resolveImagePath(el){
+  // MAML resolves src/srcExp first, then srcid selects the suffixed asset.
+  // Example: srcExp=\"'time/'+#TimeStyle+'/t.png'\" srcid=\"#h1\"
+  // -> time/1/t_8.png.  srcid is therefore NOT an alternative to srcExp.
+  let src=null;
+  const srcExp=el.getAttribute('srcExp');
+  if(srcExp!=null) src=toStr(evaluate(srcExp));
+  else if(el.hasAttribute('src')) src=el.getAttribute('src');
   if(!src) return null;
   const idAttr = el.tagName==='ImageNumber' ? el.getAttribute('number') : el.getAttribute('srcid');
-  if(idAttr!=null){
+  if(idAttr!=null && String(idAttr).trim()!==''){
     const idv=Math.trunc(toNum(evaluate(idAttr)));
     return insertSuffix(src, idv);
   }
@@ -891,17 +1042,23 @@ function drawTree(el){
   const ownAlpha=clamp(getAlpha(el),0,255)/255;
 
   if(tag==='Group'||tag==='MusicControl'){
-    const x=getNum(el,'x',0), y=getNum(el,'y',0);
-    const rot=getNum(el,'rotation',getNum(el,'angle',0));
+    // Android/MAML-style local coordinate system: x/y place the group in its
+    // parent; children remain in group-local coordinates. Rotation/scale are
+    // applied around the group's local pivot, exactly like Canvas.rotate()/
+    // Canvas.scale() with a pivot after the group's translation.
+    const anim=getElementAnimProps(el);
+    const x=anim.x!=null?anim.x:getNum(el,'x',0), y=anim.y!=null?anim.y:getNum(el,'y',0);
+    const rot=anim.rotation!=null?anim.rotation:getNum(el,'rotation',getNum(el,'angle',0));
     const scale=getNum(el,'scale',1);
     const pivotX=getNum(el,'pivotX',getNum(el,'centerX',0));
     const pivotY=getNum(el,'pivotY',getNum(el,'centerY',0));
+    const groupAlpha=anim.alpha!=null?clamp(anim.alpha,0,255):getAlpha(el);
     ctx.save();
     ctx.translate(x,y);
     if(rot||scale!==1){
       ctx.translate(pivotX,pivotY); ctx.rotate(rot*Math.PI/180); ctx.scale(scale,scale); ctx.translate(-pivotX,-pivotY);
     }
-    alphaStack.push((alphaStack[alphaStack.length-1]||1)*ownAlpha);
+    alphaStack.push((alphaStack[alphaStack.length-1]||1)*(groupAlpha/255));
     for(const c of Array.from(el.children)) drawTree(c);
     alphaStack.pop();
     ctx.restore();
@@ -928,35 +1085,46 @@ function applyAlign(x,y,w,h,align,alignV){
 }
 
 function drawImageEl(el, ownAlpha){
-  const path=resolveImagePath(el);
+  const anim=getElementAnimProps(el);
+  const isNum=el.tagName==='ImageNumber';
+  const numberInfo=isNum?imageNumberInfo(el):null;
+  const path=anim.src || (isNum?numberInfo.src:resolveImagePath(el));
   const name=el.getAttribute('name');
-  if(!path){ return; }
-  const img=getImage(path);
-  const x=getNum(el,'x',0), y=getNum(el,'y',0);
-  const hasW=el.hasAttribute('w'), hasH=el.hasAttribute('h');
-  const natW=img&&img.naturalWidth||0, natH=img&&img.naturalHeight||0;
-  const w=hasW?getNum(el,'w',0):natW;
-  const h=hasH?getNum(el,'h',0):natH;
-  const align=el.getAttribute('align')||'left';
-  const alignV=el.getAttribute('alignV')||'top';
-  const [dx,dy]=applyAlign(x,y,w,h,align,alignV);
-  const rot=getNum(el,'rotation',getNum(el,'angle',0));
+  if(!path) return;
+  const x=anim.x!=null?anim.x:getNum(el,'x',0), y=anim.y!=null?anim.y:getNum(el,'y',0);
+  const hasW=el.hasAttribute('w') || anim.w!=null, hasH=el.hasAttribute('h') || anim.h!=null;
+  const baseImg=!isNum?getImage(path):null;
+  const natW=baseImg&&baseImg.naturalWidth||0, natH=baseImg&&baseImg.naturalHeight||0;
+  const w=anim.w!=null?anim.w:(hasW?getNum(el,'w',0):natW);
+  const h=anim.h!=null?anim.h:(hasH?getNum(el,'h',0):natH);
+  const align=el.getAttribute('align')||'left', alignV=el.getAttribute('alignV')||'top';
+  const drawW=isNum?numberInfo.totalW:w, drawH=isNum?numberInfo.height:h;
+  const [dx,dy]=applyAlign(x,y,drawW,drawH,align,alignV);
+  const rot=anim.rotation!=null?anim.rotation:getNum(el,'rotation',getNum(el,'angle',0));
   const scale=getNum(el,'scale',1);
-  const pivotX=getNum(el,'pivotX',getNum(el,'centerX',0));
-  const pivotY=getNum(el,'pivotY',getNum(el,'centerY',0));
-  const a=curAlpha(ownAlpha);
-  if(name) Engine.elementRefs.set(name,{bmpWidth:natW,bmpHeight:natH,actualW:w,actualH:h});
-  if(a<=0.003) return;
-  ctx.save();
-  ctx.globalAlpha=a;
-  if(rot||scale!==1){
-    ctx.translate(x+pivotX,y+pivotY); ctx.rotate(rot*Math.PI/180); ctx.scale(scale,scale); ctx.translate(-(x+pivotX),-(y+pivotY));
+  const pivotX=getNum(el,'pivotX',getNum(el,'centerX',0)), pivotY=getNum(el,'pivotY',getNum(el,'centerY',0));
+  const a=curAlpha((anim.alpha!=null?clamp(anim.alpha,0,255):getAlpha(el))/255);
+  if(name){
+    Engine.elementRefs.set(name,{bmpWidth:drawW,bmpHeight:drawH,actualW:w,actualH:h});
   }
-  if(img && img.complete && natW>0){
-    ctx.drawImage(img, dx, dy, w||natW, h||natH);
+  if(a<=0.003) return;
+  ctx.save(); ctx.globalAlpha=a;
+  if(rot||scale!==1){
+    ctx.translate(dx+pivotX,dy+pivotY); ctx.rotate(rot*Math.PI/180); ctx.scale(scale,scale); ctx.translate(-(dx+pivotX),-(dy+pivotY));
+  }
+  if(isNum){
+    let cursor=dx;
+    for(let i=0;i<numberInfo.imgs.length;i++){
+      const im=numberInfo.imgs[i], iw=numberInfo.widths[i];
+      if(im&&im.complete&&im.naturalWidth) ctx.drawImage(im,cursor,dy,iw,numberInfo.height);
+      else if(document.getElementById('showPlaceholders').checked){ ctx.strokeStyle='rgba(255,80,220,.55)';ctx.lineWidth=1;ctx.strokeRect(cursor+.5,dy+.5,iw-1,numberInfo.height-1); }
+      cursor+=iw+(i<numberInfo.imgs.length-1?numberInfo.gap:0);
+    }
+  } else if(baseImg&&baseImg.complete&&natW>0){
+    ctx.drawImage(baseImg,dx,dy,w||natW,h||natH);
   } else if(document.getElementById('showPlaceholders').checked){
     ctx.strokeStyle='rgba(255,80,220,.55)'; ctx.lineWidth=1;
-    ctx.strokeRect(dx+0.5, dy+0.5, (w||40)-1, (h||40)-1);
+    ctx.strokeRect(dx+.5,dy+.5,(w||40)-1,(h||40)-1);
   }
   ctx.restore();
 }
@@ -984,17 +1152,39 @@ function drawTextEl(el, ownAlpha){
   const bold=el.getAttribute('bold')==='true';
   const family=fontFamilyFor(el.getAttribute('typeface'));
   ctx.font=`${bold?'bold ':''}${size}px "${family}"`;
-  const w=ctx.measureText(str).width;
-  if(name) Engine.elementRefs.set(name,{textWidth:w,textHeight:size});
+  const measuredW=ctx.measureText(str).width;
+  if(name) Engine.elementRefs.set(name,{textWidth:measuredW,textHeight:size});
   if(a<=0.003) return;
   const x=getNum(el,'x',0), y=getNum(el,'y',0);
+  const boxW=el.hasAttribute('w')?getNum(el,'w',0):0;
+  const boxH=el.hasAttribute('h')?getNum(el,'h',0):0;
   const align=el.getAttribute('align')||'left';
   const alignV=el.getAttribute('alignV')||'top';
+  // MAML Text alignment is relative to its declared box when w/h are present;
+  // otherwise x/y are the text anchor themselves.
+  const tx=boxW>0 ? (align==='center'?x+boxW/2:(align==='right'?x+boxW:x)) : x;
+  const ty=boxH>0 ? (alignV==='center'?y+boxH/2:(alignV==='bottom'?y+boxH:y)) : y;
   ctx.textAlign = align==='center'?'center':(align==='right'?'right':'left');
   ctx.textBaseline = alignV==='center'?'middle':(alignV==='bottom'?'bottom':'top');
   ctx.globalAlpha=a;
   ctx.fillStyle=resolveColor(el.getAttribute('color'));
-  ctx.fillText(str, x, y);
+  if(el.getAttribute('multiLine')==='true' && boxW>0){
+    const words=str.split(/\s+/), lines=[]; let line='';
+    for(const word of words){
+      const test=line?line+' '+word:word;
+      if(ctx.measureText(test).width<=boxW || !line) line=test;
+      else { lines.push(line); line=word; }
+    }
+    if(line) lines.push(line);
+    const lineH=size*1.12;
+    let firstY=ty;
+    if(alignV==='center') firstY=ty-(lines.length-1)*lineH/2;
+    else if(alignV==='bottom') firstY=ty-(lines.length-1)*lineH;
+    ctx.textBaseline='top';
+    for(let i=0;i<lines.length;i++) ctx.fillText(lines[i],tx,firstY+i*lineH);
+  } else {
+    ctx.fillText(str, tx, ty);
+  }
 }
 
 function drawDateTimeEl(el, ownAlpha){
@@ -1009,13 +1199,17 @@ function drawDateTimeEl(el, ownAlpha){
   if(name) Engine.elementRefs.set(name,{textWidth:w,textHeight:size});
   if(a<=0.003) return;
   const x=getNum(el,'x',0), y=getNum(el,'y',0);
+  const boxW=el.hasAttribute('w')?getNum(el,'w',0):0;
+  const boxH=el.hasAttribute('h')?getNum(el,'h',0):0;
   const align=el.getAttribute('align')||'left';
   const alignV=el.getAttribute('alignV')||'top';
+  const tx=boxW>0 ? (align==='center'?x+boxW/2:(align==='right'?x+boxW:x)) : x;
+  const ty=boxH>0 ? (alignV==='center'?y+boxH/2:(alignV==='bottom'?y+boxH:y)) : y;
   ctx.textAlign = align==='center'?'center':(align==='right'?'right':'left');
   ctx.textBaseline = alignV==='center'?'middle':(alignV==='bottom'?'bottom':'top');
   ctx.globalAlpha=a;
   ctx.fillStyle=resolveColor(el.getAttribute('color'));
-  ctx.fillText(str, x, y);
+  ctx.fillText(str, tx, ty);
 }
 
 function drawTimeEl(el, ownAlpha){
@@ -1084,13 +1278,32 @@ function handleButton(el){
 }
 function registerSliderHitbox(el){
   const sp=Array.from(el.children).find(c=>c.tagName==='StartPoint');
+  const ep=Array.from(el.children).find(c=>c.tagName==='EndPoint');
   if(!sp) return;
-  const x=getNum(sp,'x',0), y=getNum(sp,'y',0), w=getNum(sp,'w',0), h=getNum(sp,'h',0);
-  if(w>0&&h>0 && document.getElementById('showHitboxes').checked){
-    const rect=rectFromLocal(x,y,w,h);
+  const sx=getNum(sp,'x',0), sy=getNum(sp,'y',0), sw=getNum(sp,'w',0), sh=getNum(sp,'h',0);
+  const ex=ep?getNum(ep,'x',0):sx, ey=ep?getNum(ep,'y',0):sy, ew=ep?getNum(ep,'w',0):sw, eh=ep?getNum(ep,'h',0):sh;
+  if(sw<=0||sh<=0) return;
+  const startRect=rectFromLocal(sx,sy,sw,sh);
+  const endRect=rectFromLocal(ex,ey,ew,eh);
+  const state=Engine.sliderState.get(el.getAttribute('name')||el)||{moveX:0,moveY:0,state:0,reached:false};
+  const active=Engine.activeSliderEl===el;
+  if(active){
+    state.moveX=Engine.touch.x-Engine.touch.beginX; state.moveY=Engine.touch.y-Engine.touch.beginY; state.state=1;
+    const moved={minX:startRect.minX+state.moveX,maxX:startRect.maxX+state.moveX,minY:startRect.minY+state.moveY,maxY:startRect.maxY+state.moveY};
+    state.reached=moved.minX<=endRect.maxX&&moved.maxX>=endRect.minX&&moved.minY<=endRect.maxY&&moved.maxY>=endRect.minY;
+    if(state.reached) state.state=2;
+  } else if(!Engine.touch.active){
+    state.moveX=0; state.moveY=0; state.state=0; state.reached=false;
+  }
+  Engine.sliderState.set(el.getAttribute('name')||el,state);
+  if(el.getAttribute('name')) Engine.elementRefs.set(el.getAttribute('name'),{moveX:state.moveX,moveY:state.moveY,state:state.state});
+  frameSliders.push({el,startRect,endRect});
+  if(document.getElementById('showHitboxes').checked){
     ctx.save(); ctx.setTransform(1,0,0,1,0,0);
-    ctx.strokeStyle='rgba(224,166,60,.7)'; ctx.setLineDash([4,3]);
-    ctx.strokeRect(rect.minX,rect.minY,rect.maxX-rect.minX,rect.maxY-rect.minY);
+    ctx.strokeStyle=active?'rgba(124,217,146,.9)':'rgba(224,166,60,.7)'; ctx.setLineDash([4,3]);
+    ctx.strokeRect(startRect.minX+state.moveX,startRect.minY+state.moveY,startRect.maxX-startRect.minX,startRect.maxY-startRect.minY);
+    ctx.strokeStyle='rgba(90,169,255,.45)';
+    ctx.strokeRect(endRect.minX,endRect.minY,endRect.maxX-endRect.minX,endRect.maxY-endRect.minY);
     ctx.restore();
   }
 }
@@ -1113,28 +1326,47 @@ canvas.addEventListener('pointerdown', e=>{
   let hit=null;
   for(let i=Engine.latestButtons.length-1;i>=0;i--){
     const b=Engine.latestButtons[i];
-    if(p.x>=b.rect.minX&&p.x<=b.rect.maxX&&p.y>=b.rect.minY&&p.y<=b.rect.maxY){ hit=b; break; }
+    if(p.x>=b.rect.minX&&p.x<=b.rect.maxX&&p.y>=b.rect.minY&&p.y<=b.rect.maxY){hit=b;break;}
   }
-  Engine.activeButtonEl = hit ? hit.el : null;
-  Engine.pressedButtonEl = hit ? hit.el : null;
-  if(hit){ const tr=findTrigger(hit.el,'down'); if(tr) runCommandsIn(tr); }
+  Engine.activeButtonEl=hit?hit.el:null; Engine.pressedButtonEl=hit?hit.el:null;
+  Engine.activeSliderEl=null;
+  for(let i=Engine.latestSliders.length-1;i>=0;i--){
+    const q=Engine.latestSliders[i], r=q.startRect;
+    if(p.x>=r.minX&&p.x<=r.maxX&&p.y>=r.minY&&p.y<=r.maxY){Engine.activeSliderEl=q.el;break;}
+  }
+  if(hit){const tr=findTrigger(hit.el,'down');if(tr)runCommandsIn(tr);}
 });
 canvas.addEventListener('pointermove', e=>{
-  if(!Engine.touch.active) return;
+  if(!Engine.touch.active)return;
   const p=canvasPoint(e); Engine.touch.x=p.x; Engine.touch.y=p.y;
 });
 canvas.addEventListener('pointerup', e=>{
   const p=canvasPoint(e); Engine.touch.x=p.x; Engine.touch.y=p.y;
-  if(Engine.activeButtonEl){ const tr=findTrigger(Engine.activeButtonEl,'up'); if(tr) runCommandsIn(tr); }
-  Engine.activeButtonEl=null; Engine.pressedButtonEl=null; Engine.touch.active=false;
+  let reachedUnlock=false;
+  if(Engine.activeSliderEl){
+    const nm=Engine.activeSliderEl.getAttribute('name');
+    const st=Engine.sliderState.get(nm||Engine.activeSliderEl);
+    reachedUnlock=Engine.activeSliderEl.tagName==='Unlocker' && !!(st&&st.reached);
+    const tr=findTrigger(Engine.activeSliderEl,'up'); if(tr)runCommandsIn(tr);
+  }
+  if(Engine.activeButtonEl){const tr=findTrigger(Engine.activeButtonEl,'up');if(tr)runCommandsIn(tr);}
+  if(reachedUnlock){
+    Engine.unlockReached=true;
+    log('🔓 Unlocker reached EndPoint — unlock gesture accepted.','act');
+    flashEdge('#7cd992');
+  }
+  Engine.activeButtonEl=null; Engine.pressedButtonEl=null; Engine.activeSliderEl=null; Engine.touch.active=false;
 });
-canvas.addEventListener('pointercancel', ()=>{ Engine.activeButtonEl=null; Engine.pressedButtonEl=null; Engine.touch.active=false; });
+canvas.addEventListener('pointercancel', ()=>{
+  Engine.activeButtonEl=null; Engine.pressedButtonEl=null; Engine.activeSliderEl=null; Engine.touch.active=false;
+});
 
 /* ============================== render loop ============================== */
 function frameTick(){
   Engine.frameVarCache.clear();
   Engine.resolvingSet.clear();
   frameButtons=[];
+  frameSliders=[];
   ctx.setTransform(1,0,0,1,0,0);
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle='#000'; ctx.fillRect(0,0,canvas.width,canvas.height);
@@ -1153,6 +1385,7 @@ function frameTick(){
     ctx.restore();
   }
   Engine.latestButtons=frameButtons;
+  Engine.latestSliders=frameSliders;
   updateWatchPanel();
   requestAnimationFrame(frameTick);
 }
@@ -1198,7 +1431,7 @@ async function loadZip(file){
 
 async function parseManifest(entry){
   Engine.varDecls.clear(); Engine.thresholdVars.length=0; Engine.contentProviderVarColumn.clear();
-  Engine.overrides.clear(); Engine.visOverrides.clear(); Engine.animState.clear();
+  Engine.overrides.clear(); Engine.visOverrides.clear(); Engine.animState.clear(); Engine.elementAnimState.clear(); Engine.elementAnims.clear(); Engine.sliderState.clear(); Engine.latestSliders=[]; Engine.activeSliderEl=null; Engine.unlockReached=false;
   Engine.elementRefs.clear(); Engine.declCounter=0; Engine.resumeTrigger=null; Engine.pauseTrigger=null;
   Engine.needsMissingLog.clear(); warnedOnce.clear();
 
@@ -1238,6 +1471,7 @@ async function parseManifest(entry){
 
 function resetEngine(){
   Engine.loaded=false; Engine.manifestRoot=null;
+  Engine.elementAnimState.clear(); Engine.elementAnims.clear(); Engine.sliderState.clear(); Engine.latestSliders=[]; Engine.activeSliderEl=null; Engine.unlockReached=false;
   for(const {img} of Engine.imageCache.values()){ try{ URL.revokeObjectURL(img.src); }catch(e){} }
   Engine.imageCache.clear(); Engine.blobPromiseCache.clear();
   document.getElementById('stAssets').textContent='0';
