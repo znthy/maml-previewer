@@ -145,8 +145,8 @@
       <details>
         <summary>Weather (ContentProviderBinder)</summary>
         <div class="panelbody">
-          <div class="toggle"><input type="checkbox" id="weatherSim"> Provide simulated weather data</div>
-          <div class="subtle" style="margin:4px 0 8px">Off = binder vars stay <code>isnull()</code>, exactly like a device with no weather source — the same fallback chain your manifest already handles.</div>
+          <div class="toggle"><input type="checkbox" id="weatherSim" checked> Provide simulated weather data</div>
+          <div class="subtle" style="margin:4px 0 8px">On by default so temperature-driven layout (icon thresholds, %d℃ text, day/night bars) is visible immediately. Turn off to see the <code>isnull()</code> fallback chain a device with no weather source would hit.</div>
           <div class="row"><label>City</label><input type="text" id="wCity" value="San Francisco"></div>
           <div class="row"><label>Condition</label><input type="text" id="wCond" value="Sunny"></div>
           <div class="row"><label>Now °</label><input type="number" id="wTemp" value="21"></div>
@@ -393,7 +393,7 @@ const Engine = {
   latestSliders:[], activeSliderEl:null, sliderState:new Map(), unlockReached:false,
   clock:{override:false, base:Date.now(), setAt:Date.now(), speed:1},
   sim:{battLevel:82,battState:0,ringMode:2,volLevel:60,missedCalls:0,unreadSms:0,tiltX:0,tiltY:0,
-       timeFormat24:0, weatherSim:false, wCity:'San Francisco', wCond:'Sunny', wTemp:21, wHigh:24, wLow:14},
+       timeFormat24:0, weatherSim:true, wCity:'San Francisco', wCond:'Sunny', wTemp:21, wHigh:24, wLow:14},
   needsMissingLog:new Set(),
 };
 
@@ -630,9 +630,9 @@ const BUILTINS = {
   touch_pressure: ()=>Engine.touch.active?1:0,
   weather_city: ()=>Engine.sim.weatherSim?Engine.sim.wCity:'',
   weather_condition: ()=>Engine.sim.weatherSim?Engine.sim.wCond:'',
-  weather_cur_temp: ()=>Engine.sim.weatherSim?Engine.sim.wTemp+'℃':'',
-  weather_high_temp: ()=>Engine.sim.weatherSim?Engine.sim.wHigh+'℃':'',
-  weather_low_temp: ()=>Engine.sim.weatherSim?Engine.sim.wLow+'℃':'',
+  weather_cur_temp: ()=>Engine.sim.weatherSim?Engine.sim.wTemp:NULLV,
+  weather_high_temp: ()=>Engine.sim.weatherSim?Engine.sim.wHigh:NULLV,
+  weather_low_temp: ()=>Engine.sim.weatherSim?Engine.sim.wLow:NULLV,
   weather_wind_pow: ()=>'3', weather_wind_dir: ()=>'N',
   weather_sunrise: ()=>'06:20', weather_sunset: ()=>'18:40',
 };
@@ -835,6 +835,19 @@ function getImage(path){
   });
   return img;
 }
+// Resolves once `path` has either loaded (naturalWidth known) or failed.
+// Used to prefetch digit glyphs so chained .bmp_width centering math (clock
+// groups built from Time/ImageNumber digits) has real widths on frame 1
+// instead of the 40px placeholder guess.
+function preloadImage(path){
+  const img=getImage(path);
+  if(!img) return Promise.resolve();
+  if(img.complete && img.naturalWidth) return Promise.resolve();
+  return new Promise(res=>{
+    img.addEventListener('load', res, {once:true});
+    img.addEventListener('error', res, {once:true});
+  });
+}
 function updateAssetCount(){
   const n=[...Engine.blobPromiseCache.keys()].length;
   document.getElementById('stAssets').textContent=n;
@@ -864,21 +877,34 @@ async function registerFonts(){
 function resolveColor(raw){
   if(!raw) return '#ffffff';
   raw=raw.trim();
-  if(raw.startsWith('@')||raw.startsWith('#') && raw.length>7){
-    // may itself be a variable (color="@varname") or already a plain hex
-  }
   if(raw.startsWith('@')||raw.startsWith('#') && Engine.varDecls.has(raw.slice(1))){
     const v = toStr(evaluate(raw.startsWith('@')?raw:('@'+raw.slice(1))));
     return normalizeHex(v);
   }
   return normalizeHex(raw);
 }
+// Accepts plain #RRGGBB as well as Android-style ARGB (#AARRGGBB, alpha first —
+// e.g. color="#FFFFFFFF" in vivo's own docs). ARGB is converted to rgba() so the
+// baked-in alpha channel actually renders instead of being discarded; it still
+// composites correctly with the element's separate alpha="" attribute, since
+// canvas multiplies globalAlpha with a fillStyle's own alpha automatically.
 function normalizeHex(v){
   if(!v) return '#ffffff';
   v=String(v).trim();
   if(!v.startsWith('#')) v='#'+v;
-  if(v.length===9) v=v.slice(0,7); // strip possible alpha channel prefix/suffix mismatch, keep RGB
-  return v;
+  const hex=v.slice(1);
+  if(hex.length===8 && /^[0-9a-fA-F]{8}$/.test(hex)){
+    const a=parseInt(hex.slice(0,2),16)/255;
+    const r=parseInt(hex.slice(2,4),16);
+    const g=parseInt(hex.slice(4,6),16);
+    const b=parseInt(hex.slice(6,8),16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  if(hex.length===3 && /^[0-9a-fA-F]{3}$/.test(hex)){
+    return '#'+[...hex].map(c=>c+c).join('');
+  }
+  if(hex.length===6) return v;
+  return hex.length>6 ? v.slice(0,7) : v; // best-effort fallback
 }
 function computeTextString(el){
   if(el.hasAttribute('textExp')) return toStr(evaluate(el.getAttribute('textExp')));
@@ -1308,9 +1334,15 @@ function registerSliderHitbox(el){
   }
 }
 function findTrigger(el, action){
-  const trs=Array.from(el.children).find(c=>c.tagName==='Triggers');
-  if(!trs) return null;
-  return Array.from(trs.children).find(c=>c.tagName==='Trigger' && c.getAttribute('action')===action) || null;
+  // Real-world MAML isn't consistent about wrapping <Trigger> in <Triggers> —
+  // some buttons mix a bare <Trigger action="down"> as a direct child alongside
+  // a <Triggers><Trigger action="up">...</Trigger></Triggers> sibling (seen in
+  // the wild, e.g. paging/unlock buttons). Accept both forms and merge them,
+  // direct children first so they take priority on a duplicate action.
+  const direct = Array.from(el.children).filter(c=>c.tagName==='Trigger');
+  const trs = Array.from(el.children).find(c=>c.tagName==='Triggers');
+  const wrapped = trs ? Array.from(trs.children).filter(c=>c.tagName==='Trigger') : [];
+  return [...direct, ...wrapped].find(c=>c.getAttribute('action')===action) || null;
 }
 
 /* ============================== pointer / touch simulation ============================== */
@@ -1455,6 +1487,28 @@ async function parseManifest(entry){
 
   collectDecls(root);
   log('Parsed manifest: '+Engine.varDecls.size+' variables, '+Engine.thresholdVars.length+' threshold triggers.');
+
+  // Prefetch every 0-9 (+dot) digit glyph used by <Time>/<ImageNumber> so their
+  // natural widths are known before the first paint. Without this, a digit seen
+  // for the first time falls back to a 40px width guess for one frame, which
+  // visibly kicks any group centered on summed .bmp_width (e.g. a full clock
+  // built from named digit images) out of place until it self-corrects.
+  const digitWaits=[];
+  (function collectDigitSources(el){
+    if(SKIP_TAGS.has(el.tagName)) return;
+    if(el.tagName==='Time' && el.hasAttribute('src') && !el.hasAttribute('srcExp')){
+      const base=el.getAttribute('src');
+      for(let d=0;d<10;d++) digitWaits.push(preloadImage(insertSuffix(base,d)));
+      digitWaits.push(preloadImage(insertDotSuffix(base)));
+    } else if(el.tagName==='ImageNumber' && el.hasAttribute('src') && !el.hasAttribute('srcExp')){
+      const base=el.getAttribute('src');
+      for(let d=0;d<10;d++) digitWaits.push(preloadImage(insertSuffix(base,d)));
+    }
+    for(const c of Array.from(el.children)) collectDigitSources(c);
+  })(root);
+  if(digitWaits.length){
+    await Promise.race([Promise.all(digitWaits), new Promise(res=>setTimeout(res,1500))]);
+  }
 
   // best-effort wallpaper detection
   const wallCandidates = Engine.fileIndex.filter(f=>/wall(paper)?[^\/]*\.(jpg|jpeg|png)$/i.test(f.path));
@@ -1601,4 +1655,4 @@ log('Ready. Open a theme .zip to begin — drag & drop also works.');
 })();
 </script>
 </body>
-  </html>
+</html>
