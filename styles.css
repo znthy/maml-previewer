@@ -169,7 +169,7 @@
       gap: 16px;
       flex-wrap: wrap;
   }
-#statusToggle i {
+#statusToggle icon {
     display: inline-block;
     width: 10px;
     height: 10px;
