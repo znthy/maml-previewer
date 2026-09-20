@@ -135,6 +135,10 @@ document.getElementById('editToggle').addEventListener('click', () => {
   fitStage();
 });
 
+document.getElementById('wrapToggleBtn').addEventListener('click', () => {
+  xmlEditor.classList.toggle('wrap');
+});
+
 export function resetEditor() {
   clearTimeout(liveApplyTimer);
   hideEditorError();

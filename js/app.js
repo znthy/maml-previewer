@@ -111,6 +111,7 @@ function refineScreenHeightFromWallpaper() {
       if (Math.abs(img.naturalHeight - Engine.screenH) > 4) {
         Engine.screenH = img.naturalHeight;
         canvas.height = Math.round(Engine.screenH);
+        fitStage();
         document.getElementById('stScreen').textContent = Engine.screenW + ' × ' + Math.round(Engine.screenH);
         log('Refined screen height to ' + Math.round(Engine.screenH) + 'px from full-bleed wallpaper ' + Engine.wallpaperPath + ' (its native width matches screenWidth 1:1).');
       }

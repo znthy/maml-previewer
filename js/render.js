@@ -24,6 +24,8 @@ import { runCommandsIn } from './commands.js';
 
 import { canvas, ctx } from './stage.js';
 
+import { logOnce } from './log.js';
+
 export const SKIP_TAGS = new Set([ 'Var', 'VarArray', 'ExternalCommands', 'VariableBinders', 'FramerateController', 'Triggers', 'Trigger', 'NormalState', 'PressedState', 'ReachedState', 'StartPoint', 'EndPoint', 'Path', 'Position', 'PositionAnimation', 'SizeAnimation', 'AlphaAnimation', 'RotationAnimation', 'SourcesAnimation', 'VariableAnimation', 'AniFrame', 'Mask', 'Normal', 'Pressed' ]);
 
 let alphaStack = [ 1 ];
@@ -210,16 +212,21 @@ export function frameTick() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   alphaStack = [ 1 ];
   if (Engine.loaded && Engine.manifestRoot) {
-    for (const t of Engine.thresholdVars) {
-      const val = Engine.resolveVar(t.name);
-      if (t.last != null && Math.abs(val - t.last) >= t.threshold) runCommandsIn(t.triggerEl);
-      t.last = val;
-    }
-    Engine.elementRefs.clear();
-    prepass(Engine.manifestRoot);
     ctx.save();
-    for (const c of Array.from(Engine.manifestRoot.children)) drawTree(c);
-    ctx.restore();
+    try {
+      for (const t of Engine.thresholdVars) {
+        const val = Engine.resolveVar(t.name);
+        if (t.last != null && Math.abs(val - t.last) >= t.threshold) runCommandsIn(t.triggerEl);
+        t.last = val;
+      }
+      Engine.elementRefs.clear();
+      prepass(Engine.manifestRoot);
+      for (const c of Array.from(Engine.manifestRoot.children)) drawTree(c);
+    } catch (e) {
+      logOnce('frameTick-error', 'Render error: ' + e.message + ' (frame skipped, preview may look blank until fixed)', 'warn');
+    } finally {
+      ctx.restore();
+    }
   }
   Engine.latestButtons = frameButtons;
   Engine.latestSliders = frameSliders;
